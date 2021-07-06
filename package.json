@@ -1,0 +1,23 @@
+{
+  "name": "fastapi-data",
+  "version": "1.0.0",
+  "description": "Data Layer For Fast Api Express",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kocyigitkim/fastapi-data.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/kocyigitkim/fastapi-data/issues"
+  },
+  "homepage": "https://github.com/kocyigitkim/fastapi-data#readme",
+  "dependencies": {
+    "fastapi-express": "^1.1.10",
+    "knex": "^0.95.6"
+  }
+}

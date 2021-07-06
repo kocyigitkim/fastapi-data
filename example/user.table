@@ -1,0 +1,12 @@
+def User
+pkey guid Id
+string FirstName = null
+string LastName = null
+string Username = null
+string Email?
+string Phone?
+fkey Role guid RoleId?
+datetime BirthDate? = null
+datetime CreateDate? = NOW
+datetime UpdateDate? = null
+bool IsDeleted? = 0
