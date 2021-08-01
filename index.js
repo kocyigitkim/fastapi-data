@@ -1,3 +1,6 @@
+const main = require('./example/main');
+
+/*
 const dbConfig = {
     client: "mssql",
     connection: {
@@ -13,4 +16,5 @@ const migration = require('./src/migration');
 var db = new dbConnection(dbConfig);
 var migrate = new migration(db);
 migrate.registerSchemas(`${__dirname}/example`);
-migrate.migrate();
+//migrate.exportSchemas(`${__dirname}/example/dbschemas`);
+migrate.migrate();*/

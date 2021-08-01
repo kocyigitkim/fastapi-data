@@ -19,6 +19,14 @@ class SchemaParser {
                 line.splice(0, 1);
                 isPrimaryKey = true;
             }
+            if (type === 'fkey') {
+                line.splice(0, 1);
+                isForeignKey = true;
+                foreign = line[0];
+                line.splice(0, 1);
+                isNullable = line[1].endsWith("?");
+                if (isNullable) line[1] = line[1].substr(0, line[1].length - 1);
+            }
             if (type === 'def') {
                 this.name = line[1];
             }

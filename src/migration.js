@@ -1,6 +1,8 @@
 const path = require('path');
 const fs = require('fs');
 const schemaParser = require('./schemaParser');
+const schemaLoader = require('knex-schema-loader');
+const { default: knex } = require('knex');
 class Migration {
     /**
      * 
@@ -20,6 +22,39 @@ class Migration {
                 self.schemas.push(parser);
             }
         });
+    }
+    async exportSchemas(dir) {
+        if (!this.db.isKnex) return;
+        const db = this.db.db;
+
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+
+        var tables = await schemaLoader.getTables(db);
+        for (var table of tables.filter(p => p.type.indexOf('TABLE') > -1)) {
+            var tableColumns = ((await schemaLoader.getColumns(db, table.name)) || []).sort((a, b) => a.position - b.position);
+            var strTable = `def ${table.name}\n`;
+            for (var col of tableColumns) {
+                if (col.isprimary) {
+                    strTable += `pkey ${getRealDataType(col.type, col.length)} ${col.name}`;
+                }
+                else if (col.isforeign) {
+                    strTable += `fkey ${col.foreignTable} ${getRealDataType(col.type, col.length)} ${col.name}`;
+                }
+                else {
+                    strTable += `${getRealDataType(col.type, col.length)} ${col.name}`;
+                }
+                if (col.nullable) {
+                    strTable += '?\n';
+                }
+                else {
+                    strTable += '\n';
+                }
+            }
+            var fsPath = path.join(dir, table.name + ".table");
+            fs.writeFileSync(fsPath, strTable, { encoding: 'utf-8' });
+        }
     }
     async migrate() {
         if (!this.db.isKnex) return;
@@ -51,28 +86,72 @@ class Migration {
 
     }
 }
-
+/**
+ * 
+ * @param {*} schema 
+ * @param {} builder 
+ * @param {*} isAlter 
+ * @param {*} current 
+ */
 function DefineTableSchema(schema, builder, isAlter = false, current) {
     if (!current) {
         current = { fields: [] };
     }
-    for (var f of schema.fields) {
-        var dataType = getKnexDataType(f);
-        var _field = builder.specificType(f.name, dataType);
+    var deletedFields = current.fields.filter(p => schema.fields.filter(sf => sf.name === p.name).length === 0);
+    for (var f of deletedFields) {
+        builder.dropColumn(f.name);
+        if (f.foreign) {
+            builder.dropForeign(f.name);
+        }
+        if (f.primary) {
+            builder.dropPrimary("PK_" + schema.name + "_" + f.name);
+        }
+    }
+
+    for (var f of schema.fields.filter(p => deletedFields.filter(df => df.name === p.name).length === 0)) {
         var currentField = current.fields.filter(p => p.name === f.name)[0];
 
+        var dataType = getKnexDataType(f);
+        var _field = builder.specificType(f.name, dataType);
+        if (f.foreign) {
+            if (!currentField || (currentField && currentField.foreign !== f.foreign)) {
+                builder.foreign(f.name).references(f.reference);
+            }
+        }
         if (f.primary && !isAlter) {
-            _field.primary();
+            if (!currentField || (currentField && currentField.primary !== f.primary)) {
+                builder.primary(f.name, "PK_" + schema.name + "_" + f.name);
+            }
         }
         if (!f.nullable) {
             _field.notNullable();
+        } else {
+            _field.nullable();
         }
         if (isAlter && currentField) {
             _field.alter();
         }
     }
 }
-
+function getRealDataType(type, length) {
+    switch (type) {
+        case "nvarchar":
+            return "string";
+        case "uniqueidentifier":
+            return "guid";
+        case "bit":
+            return "boolean";
+        case "int":
+            return "int";
+        case "bigint":
+            return "long";
+        case "decimal":
+            return "decimal";
+        case "varbinary":
+            return "binary";
+    }
+    return "string";
+}
 function getKnexDataType(f) {
     switch (f.type) {
         case "string":

@@ -18,6 +18,7 @@
   "homepage": "https://github.com/kocyigitkim/fastapi-data#readme",
   "dependencies": {
     "fastapi-express": "^1.1.10",
-    "knex": "^0.95.6"
+    "knex": "^0.95.8",
+    "knex-schema-loader": "^1.0.6"
   }
 }

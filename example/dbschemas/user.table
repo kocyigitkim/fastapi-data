@@ -5,7 +5,7 @@ string LastName = null
 string Username = null
 string Email?
 string Phone?
-fkey Role guid RoleId?
+fkey Role.Id guid RoleId?
 datetime BirthDate? = null
 datetime CreateDate? = NOW
 datetime UpdateDate? = null
