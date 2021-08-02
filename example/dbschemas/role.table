@@ -1,6 +1,0 @@
-def Role
-pkey guid Id
-string Name
-datetime CreateDate?
-datetime UpdateDate?
-bool IsDeleted?

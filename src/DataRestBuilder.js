@@ -1,9 +1,13 @@
 const FastApiRouter = require('fastapi-express').FastApiRouter;
 const FastApiContext = FastApiRouter.FastApiContext;
 const migration = require('./migration');
+const dbConnection = require('./databaseConnection');
+const getSchemaDBConnection = require('./SchemaDBConnector').getDBConnector;
 const fs = require('fs');
 const path = require('path');
 const knex = require('knex').knex;
+const EntityManager = require('fastapi-express').KnexEntityPlugin.EntityManager;
+const uuid = require('uuid').v4;
 class DataRestBuilder {
     constructor() {
         /** @type {DataRouterBuilder[]} */
@@ -16,8 +20,13 @@ class DataRestBuilder {
     init(db, schemaPath) {
         this.schemaPath = schemaPath;
         if (db) {
-            this.migration = new migration(db);
+            this.migration = new migration(new dbConnection(db));
             if (schemaPath && fs.existsSync(schemaPath)) this.migration.registerSchemas(schemaPath);
+        }
+    }
+    async exportSchemas() {
+        if (this.migration) {
+            await this.migration.exportSchemas(this.schemaPath);
         }
     }
     /**
@@ -25,7 +34,7 @@ class DataRestBuilder {
      * @returns {DataRouterBuilder}
      */
     router(name) {
-        var routerBuilder = new DataRouterBuilder(name);
+        var routerBuilder = new DataRouterBuilder(this, name);
         this.routers.push(routerBuilder);
         return routerBuilder;
     }
@@ -45,7 +54,12 @@ class DataRestBuilder {
 }
 
 class DataRouterBuilder {
-    constructor(name) {
+    /**
+     * @param {DataRestBuilder} builder
+     * @param {String} name
+     */
+    constructor(builder, name) {
+        this.builder = builder;
         this.name = name;
         this.actions = [];
         this.router = new FastApiRouter.FastApiRouter(this.name, false);
@@ -67,6 +81,30 @@ class DataRouterBuilder {
             return ctx.data_response;
         }).bind(this, actionBuilder));
         return actionBuilder;
+    }
+    /**
+     * @param {String} sourceName
+     * @param {String} name
+     * @param {String} description
+     * @return {DataActionBuilder}
+     */
+    cloneAction(sourceName, name, description) {
+        var sourceAction = this.actions.find(a => a.name == sourceName);
+        if (sourceAction) {
+            var actionBuilder = new DataActionBuilder(this, name, description);
+            actionBuilder.steps = sourceAction.steps;
+            this.actions.push(actionBuilder);
+            this.router.post(name, (async (actionBuilder, ctx) => {
+                const steps = actionBuilder.steps;
+                for (var step of steps) {
+                    var r = step(ctx);
+                    if (r instanceof Promise) r = await r.catch(console.error);
+                }
+                return ctx.data_response;
+            }).bind(this, actionBuilder));
+            return actionBuilder;
+        }
+        return null;
     }
 }
 
@@ -107,19 +145,19 @@ class DataActionBuilder {
     mapResult(schema) {
         this.newStep(async (ctx) => {
             var oldBody = ctx.data_response.data || {};
-            var newBody = {};
-            for (var k in schema) {
-                var v = schema[k];
-                if (typeof v === "function") {
-                    var result = v(oldBody, k);
-                    if (result instanceof Promise) result = await result.catch(console.error);
-                    newBody[k] = result;
-                }
-                else {
-                    newBody[k] = oldBody[v];
+            if (!oldBody) return;
+
+            var newBody = null;
+            if (Array.isArray(oldBody)) {
+                newBody = [];
+                for (var item of oldBody) {
+                    newBody.push(await MapObjectDynamic(item, schema));
                 }
             }
-            ctx.data_response = newBody;
+            else {
+                newBody = await MapObjectDynamic(oldBody, schema);
+            }
+            ctx.data_response.data = newBody;
         });
         return this;
     }
@@ -133,6 +171,7 @@ class DataActionBuilder {
             var pagination = body && body.pagination;
             var sort = body && body.sort;
             var filter = body && body.filter;
+            var searchText = body && body.search;
             var tableName = this.router.name;
             var response = null;
             if (typeof action === 'function') {
@@ -160,11 +199,507 @@ class DataActionBuilder {
         });
         return this;
     }
-    create() {
 
+    /**
+     * @param {String|Function} action
+     */
+    create(action) {
+        this.newStep(async (ctx) => {
+            var tableName = this.router.name;
+            var response = null;
+            var errors = [];
+
+            if (action !== null && action !== undefined) {
+                tableName = action;
+            }
+            /** @type {knex} */
+            const db = await ctx.db(ctx);
+            const schemaDBConnection = getSchemaDBConnection(db);
+
+            if (typeof action === 'function') {
+                var result = action({ ctx, db, tableName });
+                if (result instanceof Promise) result = await result.catch(console.error);
+                response = result;
+            }
+            else {
+                var dbSchema = this.router.builder.migration.getSchema(tableName);
+
+                var recordId = null;
+                var record = { ...ctx.body };
+                if (dbSchema) {
+                    recordId = uuid();
+                    var pk = dbSchema.fields.filter(p => p.primary)[0];
+                    record[pk.name] = recordId;
+                    var assignFields = dbSchema.fields.filter(p => p.assigns.length > 0 && p.assigns.filter(a => a.action === 'create').length > 0);
+                    for (var field of assignFields) {
+                        var assign = field.assigns.filter(p => p.action === "create")[0];
+                        if (assign) {
+                            try {
+                                var fieldValue = assign.execute(schemaDBConnection);
+                                if (fieldValue instanceof Promise) fieldValue = await fieldValue.catch(err => {
+                                    errors.push({
+                                        field: field.name,
+                                        message: err.toString(),
+                                        code: 'ASSIGN_ERROR'
+                                    });
+                                    console.error(err);
+                                });
+                                record[field.name] = fieldValue;
+                            } catch (err) {
+                                console.error(err);
+                            }
+                        }
+                    }
+
+                    var requiredFields = dbSchema.fields.filter(p => p.nullable !== true);
+                    for (var reqField of requiredFields) {
+                        if (record[reqField.name] === undefined) {
+                            errors.push({
+                                field: reqField.name,
+                                message: `${reqField.name} is required`,
+                                code: 'FIELD_REQUIRED'
+                            });
+                        }
+                    }
+
+                    if (errors.length === 0) {
+                        await db(tableName).insert(record).then(p => {
+                            response = recordId || true;
+                        }).catch(err => {
+                            errors.push({
+                                field: '',
+                                message: err.toString(),
+                                code: 'DB_ERROR'
+                            });
+                            console.error(err);
+                        });
+                    }
+                }
+
+            }
+
+
+            ctx.data_response = {
+                success: (response !== null && response !== undefined) && errors.length === 0,
+                errors: errors,
+                data: response
+            };
+        });
+        return this;
+    }
+    /**
+   * @param {String|Function} action
+   */
+    update(action) {
+        this.newStep(async (ctx) => {
+            var tableName = this.router.name;
+            var response = null;
+            var errors = [];
+
+            if (action !== null && action !== undefined) {
+                tableName = action;
+            }
+            /** @type {knex} */
+            const db = await ctx.db(ctx);
+            const schemaDBConnection = getSchemaDBConnection(db);
+
+
+            if (typeof action === 'function') {
+                var result = action({ ctx, db, tableName });
+                if (result instanceof Promise) result = await result.catch(console.error);
+                response = result;
+            }
+            else {
+                var dbSchema = this.router.builder.migration.getSchema(tableName);
+
+                var recordId = null;
+                var record = { ...ctx.body };
+                if (dbSchema) {
+                    recordId = null;
+
+                    var pk = dbSchema.fields.filter(p => p.primary)[0];
+                    var whereCondition = null;
+
+                    if ((record[pk.name] || "").trim().length > 0) {
+                        recordId = record[pk.name];
+                        delete record[pk.name];
+                        whereCondition = { [pk.name]: recordId };
+                    }
+
+                    var assignFields = dbSchema.fields.filter(p => p.assigns.length > 0 && p.assigns.filter(a => a.action === 'update').length > 0);
+                    for (var field of assignFields) {
+                        var assign = field.assigns.filter(p => p.action === "update")[0];
+                        if (assign) {
+                            try {
+                                var fieldValue = assign.execute(schemaDBConnection);
+                                if (fieldValue instanceof Promise) fieldValue = await fieldValue.catch(err => {
+                                    errors.push({
+                                        field: field.name,
+                                        message: err.toString(),
+                                        code: 'ASSIGN_ERROR'
+                                    });
+                                    console.error(err);
+                                });
+                                record[field.name] = fieldValue;
+                            } catch (err) {
+                                console.error(err);
+                            }
+                        }
+                    }
+
+                    if (errors.length === 0 && whereCondition !== null) {
+                        await db(tableName).where(whereCondition).update(record).then(p => {
+                            response = recordId || true;
+                        }).catch(err => {
+                            errors.push({
+                                field: '',
+                                message: err.toString(),
+                                code: 'DB_ERROR'
+                            });
+                            console.error(err);
+                        });
+                    } else {
+                        if (whereCondition === null) {
+                            errors.push({
+                                field: pk.name,
+                                message: `${pk.name} is required`,
+                                code: 'FIELD_REQUIRED'
+                            });
+                        }
+                    }
+                }
+
+            }
+
+
+            ctx.data_response = {
+                success: (response !== null && response !== undefined) && errors.length === 0,
+                errors: errors,
+                data: response
+            };
+        });
+        return this;
+    }
+    /**
+   * @param {String|Function} action
+   */
+    detail(action) {
+
+    }
+    /**
+   * @param {String|Function} action
+   */
+    delete(action) {
+        this.newStep(async (ctx) => {
+            var tableName = this.router.name;
+            var response = null;
+            var errors = [];
+
+            if (action !== null && action !== undefined) {
+                tableName = action;
+            }
+            /** @type {knex} */
+            const db = await ctx.db(ctx);
+            const schemaDBConnection = getSchemaDBConnection(db);
+
+
+            if (typeof action === 'function') {
+                var result = action({ ctx, db, tableName });
+                if (result instanceof Promise) result = await result.catch(console.error);
+                response = result;
+            }
+            else {
+                var dbSchema = this.router.builder.migration.getSchema(tableName);
+
+                var recordId = null;
+                var record = { ...ctx.body };
+                var deletePermanently = false;
+                if (dbSchema) {
+                    recordId = null;
+
+                    var pk = dbSchema.fields.filter(p => p.primary)[0];
+                    var whereCondition = null;
+
+                    if ((record[pk.name] || "").trim().length > 0) {
+                        recordId = record[pk.name];
+                        delete record[pk.name];
+                        whereCondition = { [pk.name]: recordId };
+                    }
+
+                    var isDeletedField = dbSchema.fields.filter(p => p.name == "IsDeleted" || p.name == "isDeleted" || p.name == "is_deleted")[0];
+                    if (isDeletedField) {
+                        record[isDeletedField.name] = true;
+                        deletePermanently = false;
+                    }
+                    else {
+                        deletePermanently = true;
+                    }
+
+                    var assignFields = dbSchema.fields.filter(p => p.assigns.length > 0 && p.assigns.filter(a => a.action === 'delete').length > 0);
+                    for (var field of assignFields) {
+                        var assign = field.assigns.filter(p => p.action === "delete")[0];
+                        if (assign) {
+                            try {
+                                var fieldValue = assign.execute(schemaDBConnection);
+                                if (fieldValue instanceof Promise) fieldValue = await fieldValue.catch(err => {
+                                    errors.push({
+                                        field: field.name,
+                                        message: err.toString(),
+                                        code: 'ASSIGN_ERROR'
+                                    });
+                                    console.error(err);
+                                });
+                                record[field.name] = fieldValue;
+                            } catch (err) {
+                                console.error(err);
+                            }
+                        }
+                    }
+
+                    if (errors.length === 0 && whereCondition !== null) {
+                        if (deletePermanently) {
+                            await db(tableName).where(whereCondition).delete(record).then(p => {
+                                response = recordId || true;
+                            }).catch(err => {
+                                errors.push({
+                                    field: '',
+                                    message: err.toString(),
+                                    code: 'DB_ERROR'
+                                });
+                                console.error(err);
+                            });
+                        }
+                        else {
+                            await db(tableName).where(whereCondition).update(record).then(p => {
+                                response = recordId || true;
+                            }).catch(err => {
+                                errors.push({
+                                    field: '',
+                                    message: err.toString(),
+                                    code: 'DB_ERROR'
+                                });
+                                console.error(err);
+                            });
+                        }
+                    } else {
+                        if (whereCondition === null) {
+                            errors.push({
+                                field: pk.name,
+                                message: `${pk.name} is required`,
+                                code: 'FIELD_REQUIRED'
+                            });
+                        }
+                    }
+                }
+
+            }
+
+
+            ctx.data_response = {
+                success: (response !== null && response !== undefined) && errors.length === 0,
+                errors: errors,
+                data: response
+            };
+        });
+        return this;
+    }
+    /**
+     * @param {String|Function} action
+     */
+    setState(action) {
+        this.newStep(async (ctx) => {
+            var tableName = this.router.name;
+            var response = null;
+            var errors = [];
+
+            if (action !== null && action !== undefined) {
+                tableName = action;
+            }
+            /** @type {knex} */
+            const db = await ctx.db(ctx);
+            const schemaDBConnection = getSchemaDBConnection(db);
+
+
+            if (typeof action === 'function') {
+                var result = action({ ctx, db, tableName });
+                if (result instanceof Promise) result = await result.catch(console.error);
+                response = result;
+            }
+            else {
+                var dbSchema = this.router.builder.migration.getSchema(tableName);
+
+                var recordId = null;
+                var record = { ...ctx.body };
+                if (dbSchema) {
+                    recordId = null;
+
+                    var pk = dbSchema.fields.filter(p => p.primary)[0];
+                    var whereCondition = null;
+
+                    if ((record[pk.name] || "").trim().length > 0) {
+                        recordId = record[pk.name];
+                        delete record[pk.name];
+                        whereCondition = { [pk.name]: recordId };
+                    }
+
+                    var isActiveField = dbSchema.fields.filter(p => p.name == "IsActive" || p.name == "isactive" || p.name == "isActive")[0];
+
+                    var assignFields = dbSchema.fields.filter(p => p.assigns.length > 0 && p.assigns.filter(a => a.action === 'setstate').length > 0);
+                    for (var field of assignFields) {
+                        var assign = field.assigns.filter(p => p.action === "setstate")[0];
+                        if (assign) {
+                            try {
+                                var fieldValue = assign.execute(schemaDBConnection);
+                                if (fieldValue instanceof Promise) fieldValue = await fieldValue.catch(err => {
+                                    errors.push({
+                                        field: field.name,
+                                        message: err.toString(),
+                                        code: 'ASSIGN_ERROR'
+                                    });
+                                    console.error(err);
+                                });
+                                record[field.name] = fieldValue;
+                            } catch (err) {
+                                console.error(err);
+                            }
+                        }
+                    }
+
+                    if (errors.length === 0 && whereCondition !== null) {
+
+                        var recordDetailList = await db(tableName).where(whereCondition).limit(1).select().catch(console.error);
+                        if (isActiveField) {
+                            if (recordDetailList.length > 0) {
+                                record[isActiveField.name] = !recordDetailList[0][isActiveField.name];
+                            }
+                            else {
+                                errors.push({
+                                    field: "",
+                                    message: "Record not found",
+                                    code: 'RECORD_NOTFOUND'
+                                });
+                            }
+                        }
+                        else {
+                            errors.push({
+                                field: '',
+                                message: "State field not defined",
+                                code: 'FIELD_NOT_DEFINED'
+                            });
+                        }
+
+                        if (errors.length === 0) {
+                            await db(tableName).where(whereCondition).update(record).then(p => {
+                                response = recordId || true;
+                            }).catch(err => {
+                                errors.push({
+                                    field: '',
+                                    message: err.toString(),
+                                    code: 'DB_ERROR'
+                                });
+                                console.error(err);
+                            });
+                        }
+                    } else {
+                        if (whereCondition === null) {
+                            errors.push({
+                                field: pk.name,
+                                message: `${pk.name} is required`,
+                                code: 'FIELD_REQUIRED'
+                            });
+                        }
+                    }
+                }
+
+            }
+
+
+            ctx.data_response = {
+                success: (response !== null && response !== undefined) && errors.length === 0,
+                errors: errors,
+                data: response
+            };
+        });
+        return this;
+    }
+    /**
+     * @param {String|Function} action
+     */
+    storedProcedureJSON(action) {
+        this.newStep(async (ctx) => {
+            var tableName = this.router.name;
+            var response = null;
+            var errors = [];
+
+            if (action !== null && action !== undefined) {
+                tableName = action;
+            }
+            /** @type {knex} */
+            const db = await ctx.db(ctx);
+
+            if (typeof action === 'function') {
+                var result = action({ ctx, db, tableName });
+                if (result instanceof Promise) result = await result.catch(console.error);
+                response = result;
+            }
+            else {
+
+                var recordId = null;
+                var record = { ...ctx.body };
+
+                if (errors.length === 0) {
+
+                    await db.raw(`exec ${tableName} ?`, [
+                        JSON.stringify(record)
+                    ]).then(records => {
+                        response = JSON.parse(records.map(r => {
+                            return r[Object.keys(r)[0]];
+                        }).join(""));
+                    }).catch((err) => {
+                        errors.push({
+                            field: '',
+                            message: err.toString(),
+                            code: 'DB_ERROR'
+                        });
+                        console.error(err);
+                    });
+                }
+            }
+
+
+
+
+            ctx.data_response = {
+                success: (response !== null && response !== undefined) && errors.length === 0,
+                errors: errors,
+                data: response
+            };
+        });
+        return this;
     }
 }
 
+async function MapObjectDynamic(oldbody, schema) {
+    if (typeof schema == 'function') {
+        var result = schema(oldbody);
+        if (result instanceof Promise) result = await result.catch(console.error);
+        return result;
+    }
+
+    var newBody = {};
+    for (var k in schema) {
+        var v = schema[k];
+        if (typeof v === "function") {
+            var result = v(oldBody, k);
+            if (result instanceof Promise) result = await result.catch(console.error);
+            newBody[k] = result;
+        }
+        else {
+            newBody[k] = oldBody[v];
+        }
+    }
+    return newBody;
+}
 
 module.exports = {
     DataRestBuilder

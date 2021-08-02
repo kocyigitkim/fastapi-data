@@ -19,6 +19,8 @@
   "dependencies": {
     "fastapi-express": "^1.1.10",
     "knex": "^0.95.8",
-    "knex-schema-loader": "^1.0.6"
+    "knex-schema-loader": "^1.0.6",
+    "simple-text-parser": "^2.1.1",
+    "uuid": "^3.4.0"
   }
 }

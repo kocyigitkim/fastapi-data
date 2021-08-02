@@ -1,6 +1,13 @@
 const knex = require('knex');
 class DatabaseConnection {
     constructor(db) {
+        if(db.name === "knex"){
+            this.db = db;
+            this.isKnex = true;
+            registerKnex(this.db);
+            this.config = db.context.client.config;
+            return;
+        }
         this.config = db;
         if (db.client !== 'mongodb') {
             this.db = knex(db);

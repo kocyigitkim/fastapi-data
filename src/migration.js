@@ -10,6 +10,7 @@ class Migration {
      */
     constructor(db) {
         this.db = db;
+        /** @type {schemaParser[]} */
         this.schemas = [];
     }
     registerSchemas(dir) {
@@ -22,6 +23,9 @@ class Migration {
                 self.schemas.push(parser);
             }
         });
+    }
+    getSchema(name, type = 'table') {
+        return this.schemas.filter(p => p.name === name && p.type === type)[0];
     }
     async exportSchemas(dir) {
         if (!this.db.isKnex) return;
