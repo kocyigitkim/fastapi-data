@@ -5,9 +5,9 @@ const SchemaParser = require('./src/schemaParser');
 const DatabaseConnection = require('./src/databaseConnection');
 
 module.exports = {
-    DataRestBuilder,
+    DataRestBuilder: DataRestBuilder.DataRestBuilder,
     DataMigration,
-    SchemaDBConnector,
+    SchemaDBConnector: SchemaDBConnector.getDBConnector,
     SchemaParser,
     DatabaseConnection
 };

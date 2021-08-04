@@ -1,6 +1,6 @@
 {
   "name": "fastapi-data",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Data Layer For Fast Api Express",
   "main": "index.js",
   "scripts": {
