@@ -19,6 +19,7 @@ class DataRestBuilder {
      */
     init(db, schemaPath) {
         this.schemaPath = schemaPath;
+        this.db = db;
         if (db) {
             this.migration = new migration(new dbConnection(db));
             if (schemaPath && fs.existsSync(schemaPath)) this.migration.registerSchemas(schemaPath);
@@ -39,7 +40,7 @@ class DataRestBuilder {
         return routerBuilder;
     }
     build(app, routerPath) {
-
+        this.app = app;
         for (var file of fs.readdirSync(routerPath, { withFileTypes: true })) {
             var f = path.join(routerPath, file.name);
             if (file.name.endsWith(".datarouter.js")) {
@@ -48,6 +49,7 @@ class DataRestBuilder {
         }
 
         for (var router of this.routers) {
+            router.router.init(app);
             app.app.use("/api/" + router.name, router.router.router);
         }
     }
@@ -93,8 +95,10 @@ class DataRouterBuilder {
         if (sourceAction) {
             var actionBuilder = new DataActionBuilder(this, name, description);
             actionBuilder.steps = sourceAction.steps;
+            actionBuilder.fields = sourceAction.fields;
             this.actions.push(actionBuilder);
             this.router.post(name, (async (actionBuilder, ctx) => {
+                console.log(Object.keys(ctx));
                 const steps = actionBuilder.steps;
                 for (var step of steps) {
                     var r = step(ctx);
@@ -119,9 +123,21 @@ class DataActionBuilder {
         this.name = name;
         this.description = description;
         this.steps = [];
+        this.fields = [];
     }
     newStep(action) {
         this.steps.push(action);
+        return this;
+    }
+    asFilter(...filters){
+        this.newStep(async (ctx) => {
+            var body = ctx.body;
+            if(!body.filter) body.filter = {};
+            for(var filter of filters){
+                body.filter[filter] = body[filter];
+            }
+        });
+        return this;
     }
     map(schema) {
         this.newStep(async (ctx) => {
@@ -162,6 +178,61 @@ class DataActionBuilder {
         return this;
     }
     /**
+     * @param {String} name
+     * @param {Function} queryFunc
+     */
+    field(name, queryFunc) {
+        this.fields.push({ name, queryFunc });
+        return this;
+    }
+    /**
+    * @param {String|Function} action
+    */
+    detail(action) {
+        this.newStep(async (ctx) => {
+            var body = ctx.body;
+            var recordId = body.Id || body.id;
+            var tableName = this.router.name;
+            var response = null;
+            if (typeof action === 'function') {
+                var result = action({ ctx, recordId, tableName });
+                if (result instanceof Promise) result = await result.catch(console.error);
+                response = result;
+            }
+            else {
+                if (action !== null && action !== undefined) {
+                    tableName = action;
+                }
+                /** @type {knex} */
+                const db = await ctx.db(ctx);
+                var dbSchema = this.router.builder.migration.getSchema(tableName);
+                dbSchema.fields.filter(p => p.primary)[0]
+
+                var query = db(tableName);
+                query = query.limit(1);
+
+                var pk = dbSchema.fields.filter(p => p.primary)[0];
+                var whereCondition = null;
+
+                if ((record[pk.name] || "").trim().length > 0) {
+                    whereCondition = { [pk.name]: recordId };
+                }
+
+                var selectFields = ["*"];
+                for (var field of this.fields) {
+                    selectFields.push({ [field.name]: field.queryFunc(db) });
+                }
+                response = await query.where(whereCondition).select(...selectFields).catch(console.error);
+            }
+            ctx.data_response = {
+                success: response !== null && response !== undefined,
+                data: response
+            };
+        });
+        return this;
+    }
+
+    /**
      * @param {String|Function} action
      * action - Table name or Custom filter function
     */
@@ -185,15 +256,41 @@ class DataActionBuilder {
                 }
                 /** @type {knex} */
                 const db = await ctx.db(ctx);
+                var dbSchema = this.router.builder.migration.getSchema(tableName);
+
                 var query = db(tableName);
                 if (filter) {
-
+                    for (var kv in filter) {
+                        var v = filter[kv];
+                        query = query.where(kv, v);
+                    }
+                }
+                if (searchText) {
+                    for (var f of dbSchema.fields.filter(p => p.type === 'string')) {
+                        var fieldName = f.name;
+                        query = query.where(fieldName, 'like', `%${searchText}%`);
+                    }
                 }
 
-                response = await query.select().catch(console.error);
+                if (sort) {
+                    query = query.orderBy(sort.column, sort.state ? 'desc' : 'asc');
+                }
+
+                if (pagination) {
+                    query = query.offset(pagination.page * pagination.itemCount).limit(pagination.itemCount);
+                    pagination.count = await query.count('* as count').then(p => new Number((p[0] || {}).count)).catch(console.error);
+                    pagination.pageCount = Math.ceil(pagination.count / (pagination.itemCount * 1.0));
+                }
+
+                var selectFields = ["*"];
+                for (var field of this.fields) {
+                    selectFields.push({ [field.name]: field.queryFunc(db) });
+                }
+                response = await query.select(...selectFields).catch(console.error);
             }
             ctx.data_response = {
                 success: response !== null && response !== undefined,
+                pagination: pagination,
                 data: response
             };
         });
@@ -379,12 +476,6 @@ class DataActionBuilder {
             };
         });
         return this;
-    }
-    /**
-   * @param {String|Function} action
-   */
-    detail(action) {
-
     }
     /**
    * @param {String|Function} action
