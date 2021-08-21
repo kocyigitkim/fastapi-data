@@ -124,23 +124,25 @@ class DataActionBuilder {
         this.description = description;
         this.steps = [];
         this.fields = [];
+        this.whereBuilder = null;
     }
-    newStep(action) {
+    custom(action) {
         this.steps.push(action);
         return this;
     }
-    asFilter(...filters){
-        this.newStep(async (ctx) => {
+
+    asFilter(...filters) {
+        this.custom(async (ctx) => {
             var body = ctx.body;
-            if(!body.filter) body.filter = {};
-            for(var filter of filters){
+            if (!body.filter) body.filter = {};
+            for (var filter of filters) {
                 body.filter[filter] = body[filter];
             }
         });
         return this;
     }
     map(schema) {
-        this.newStep(async (ctx) => {
+        this.custom(async (ctx) => {
             var oldBody = ctx.body;
             var newBody = {};
             for (var k in schema) {
@@ -159,7 +161,7 @@ class DataActionBuilder {
         return this;
     }
     mapResult(schema) {
-        this.newStep(async (ctx) => {
+        this.custom(async (ctx) => {
             var oldBody = ctx.data_response.data || {};
             if (!oldBody) return;
 
@@ -186,10 +188,17 @@ class DataActionBuilder {
         return this;
     }
     /**
+     * @param {(db: knex)=>Promise<knex.QueryBuilder>} query}
+     */
+    where(query) {
+        this.whereBuilder = query;
+        return this;
+    }
+    /**
     * @param {String|Function} action
     */
     detail(action) {
-        this.newStep(async (ctx) => {
+        this.custom(async (ctx) => {
             var body = ctx.body;
             var recordId = body.Id || body.id;
             var tableName = this.router.name;
@@ -222,6 +231,9 @@ class DataActionBuilder {
                 for (var field of this.fields) {
                     selectFields.push({ [field.name]: field.queryFunc(db) });
                 }
+                if (this.whereBuilder) {
+                    query = this.whereBuilder(query);
+                }
                 response = await query.where(whereCondition).select(...selectFields).catch(console.error);
             }
             ctx.data_response = {
@@ -237,7 +249,7 @@ class DataActionBuilder {
      * action - Table name or Custom filter function
     */
     list(action) {
-        this.newStep(async (ctx) => {
+        this.custom(async (ctx) => {
             var body = ctx.body;
             var pagination = body && body.pagination;
             var sort = body && body.sort;
@@ -262,7 +274,12 @@ class DataActionBuilder {
                 if (filter) {
                     for (var kv in filter) {
                         var v = filter[kv];
-                        query = query.where(kv, v);
+                        if (Array.isArray(v)) {
+                            query = query.whereIn(kv, v);
+                        }
+                        else {
+                            query = query.where(kv, v);
+                        }
                     }
                 }
                 if (searchText) {
@@ -272,19 +289,22 @@ class DataActionBuilder {
                     }
                 }
 
-                if (sort) {
+                if (sort && sort.column) {
                     query = query.orderBy(sort.column, sort.state ? 'desc' : 'asc');
                 }
 
                 if (pagination) {
+                    pagination.count = await query.clone().count('* as count').then(p => new Number((p[0] || {}).count)).catch(console.error);
                     query = query.offset(pagination.page * pagination.itemCount).limit(pagination.itemCount);
-                    pagination.count = await query.count('* as count').then(p => new Number((p[0] || {}).count)).catch(console.error);
                     pagination.pageCount = Math.ceil(pagination.count / (pagination.itemCount * 1.0));
                 }
 
                 var selectFields = ["*"];
                 for (var field of this.fields) {
                     selectFields.push({ [field.name]: field.queryFunc(db) });
+                }
+                if (this.whereBuilder) {
+                    query = this.whereBuilder(query);
                 }
                 response = await query.select(...selectFields).catch(console.error);
             }
@@ -301,7 +321,7 @@ class DataActionBuilder {
      * @param {String|Function} action
      */
     create(action) {
-        this.newStep(async (ctx) => {
+        this.custom(async (ctx) => {
             var tableName = this.router.name;
             var response = null;
             var errors = [];
@@ -388,7 +408,7 @@ class DataActionBuilder {
    * @param {String|Function} action
    */
     update(action) {
-        this.newStep(async (ctx) => {
+        this.custom(async (ctx) => {
             var tableName = this.router.name;
             var response = null;
             var errors = [];
@@ -481,7 +501,7 @@ class DataActionBuilder {
    * @param {String|Function} action
    */
     delete(action) {
-        this.newStep(async (ctx) => {
+        this.custom(async (ctx) => {
             var tableName = this.router.name;
             var response = null;
             var errors = [];
@@ -598,7 +618,7 @@ class DataActionBuilder {
      * @param {String|Function} action
      */
     setState(action) {
-        this.newStep(async (ctx) => {
+        this.custom(async (ctx) => {
             var tableName = this.router.name;
             var response = null;
             var errors = [];
@@ -620,16 +640,15 @@ class DataActionBuilder {
                 var dbSchema = this.router.builder.migration.getSchema(tableName);
 
                 var recordId = null;
-                var record = { ...ctx.body };
+                var record = {};
                 if (dbSchema) {
                     recordId = null;
 
                     var pk = dbSchema.fields.filter(p => p.primary)[0];
                     var whereCondition = null;
 
-                    if ((record[pk.name] || "").trim().length > 0) {
-                        recordId = record[pk.name];
-                        delete record[pk.name];
+                    if ((ctx.body[pk.name] || "").trim().length > 0) {
+                        recordId = ctx.body[pk.name];
                         whereCondition = { [pk.name]: recordId };
                     }
 
@@ -645,7 +664,7 @@ class DataActionBuilder {
                                     errors.push({
                                         field: field.name,
                                         message: err.toString(),
-                                        code: 'ASSIGN_ERROR'
+                                        code: 'SETSTATE_ERROR'
                                     });
                                     console.error(err);
                                 });
@@ -660,10 +679,7 @@ class DataActionBuilder {
 
                         var recordDetailList = await db(tableName).where(whereCondition).limit(1).select().catch(console.error);
                         if (isActiveField) {
-                            if (recordDetailList.length > 0) {
-                                record[isActiveField.name] = !recordDetailList[0][isActiveField.name];
-                            }
-                            else {
+                            if (recordDetailList.length === 0) {
                                 errors.push({
                                     field: "",
                                     message: "Record not found",
@@ -680,8 +696,13 @@ class DataActionBuilder {
                         }
 
                         if (errors.length === 0) {
-                            await db(tableName).where(whereCondition).update(record).then(p => {
-                                response = recordId || true;
+                            await db(tableName).where(whereCondition).update({
+                                [isActiveField.name]: ctx.body.value
+                            }).then(() => {
+                                response = {
+                                    old: !record[isActiveField.name],
+                                    new: record[isActiveField.name]
+                                };
                             }).catch(err => {
                                 errors.push({
                                     field: '',
@@ -717,7 +738,7 @@ class DataActionBuilder {
      * @param {String|Function} action
      */
     storedProcedureJSON(action) {
-        this.newStep(async (ctx) => {
+        this.custom(async (ctx) => {
             var tableName = this.router.name;
             var response = null;
             var errors = [];

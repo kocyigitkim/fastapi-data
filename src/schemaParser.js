@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const parser = require('simple-text-parser').default;
-const flagDefinitions = ["anonymize"];
+const flagDefinitions = ["anonymize", "autonumber"];
 let AsyncFunction = Object.getPrototypeOf(async function () { }).constructor
 
 class SchemaParser {
