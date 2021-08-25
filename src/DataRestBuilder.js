@@ -8,6 +8,7 @@ const path = require('path');
 const knex = require('knex').knex;
 const EntityManager = require('fastapi-express').KnexEntityPlugin.EntityManager;
 const uuid = require('uuid').v4;
+
 class DataRestBuilder {
     constructor() {
         /** @type {DataRouterBuilder[]} */
@@ -169,11 +170,11 @@ class DataActionBuilder {
             if (Array.isArray(oldBody)) {
                 newBody = [];
                 for (var item of oldBody) {
-                    newBody.push(await MapObjectDynamic(item, schema));
+                    newBody.push(await MapObjectDynamic(item, schema, ctx));
                 }
             }
             else {
-                newBody = await MapObjectDynamic(oldBody, schema);
+                newBody = await MapObjectDynamic(oldBody, schema, ctx);
             }
             ctx.data_response.data = newBody;
         });
@@ -223,7 +224,7 @@ class DataActionBuilder {
                 var pk = dbSchema.fields.filter(p => p.primary)[0];
                 var whereCondition = null;
 
-                if ((record[pk.name] || "").trim().length > 0) {
+                if ((recordId || "").trim().length > 0) {
                     whereCondition = { [pk.name]: recordId };
                 }
 
@@ -274,11 +275,16 @@ class DataActionBuilder {
                 if (filter) {
                     for (var kv in filter) {
                         var v = filter[kv];
-                        if (Array.isArray(v)) {
+                        if (Array.isArray(v) && v.length > 0) {
                             query = query.whereIn(kv, v);
                         }
                         else {
-                            query = query.where(kv, v);
+                            if (typeof v == "string" && v.trim().length > 0) {
+                                query = query.where(kv, v);
+                            }
+                            else {
+                                query = query.where(kv, v);
+                            }
                         }
                     }
                 }
@@ -294,7 +300,7 @@ class DataActionBuilder {
                 }
 
                 if (pagination) {
-                    pagination.count = await query.clone().count('* as count').then(p => new Number((p[0] || {}).count)).catch(console.error);
+                    pagination.count = await db.queryBuilder().from(query.clone().as('t1')).count('* as count').select().then(p => new Number((p[0] || {}).count)).catch(console.error);
                     query = query.offset(pagination.page * pagination.itemCount).limit(pagination.itemCount);
                     pagination.pageCount = Math.ceil(pagination.count / (pagination.itemCount * 1.0));
                 }
@@ -765,7 +771,7 @@ class DataActionBuilder {
                         JSON.stringify(record)
                     ]).then(records => {
                         response = JSON.parse(records.map(r => {
-                            return r[Object.keys(r)[0]];
+                            return Object.values(r)[0];
                         }).join(""));
                     }).catch((err) => {
                         errors.push({
@@ -791,9 +797,9 @@ class DataActionBuilder {
     }
 }
 
-async function MapObjectDynamic(oldbody, schema) {
+async function MapObjectDynamic(oldbody, schema, ctx) {
     if (typeof schema == 'function') {
-        var result = schema(oldbody);
+        var result = schema(oldbody, ctx);
         if (result instanceof Promise) result = await result.catch(console.error);
         return result;
     }
@@ -802,7 +808,7 @@ async function MapObjectDynamic(oldbody, schema) {
     for (var k in schema) {
         var v = schema[k];
         if (typeof v === "function") {
-            var result = v(oldBody, k);
+            var result = v(oldBody, k, ctx);
             if (result instanceof Promise) result = await result.catch(console.error);
             newBody[k] = result;
         }
