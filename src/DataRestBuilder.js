@@ -1,5 +1,6 @@
 const FastApiRouter = require('fastapi-express').FastApiRouter;
-const FastApiContext = FastApiRouter.FastApiContext;
+
+const FastApiContext = require('fastapi-express').JSDOC.FastApiContext;
 const migration = require('./migration');
 const dbConnection = require('./databaseConnection');
 const getSchemaDBConnection = require('./SchemaDBConnector').getDBConnector;
@@ -81,6 +82,20 @@ class DataRouterBuilder {
                 var r = step(ctx);
                 if (r instanceof Promise) r = await r.catch(console.error);
             }
+            var withoutFields = (actionBuilder.withoutFields || []);
+            if (ctx.data_response && Array.isArray(ctx.data_response.data)) {
+                ctx.data_response.data = ctx.data_response.data.map(item => {
+                    withoutFields.forEach(field => {
+                        try { delete item[field]; } catch (err) { }
+                    });
+                    return item;
+                });
+            }
+            else if (ctx.data_response) {
+                withoutFields.forEach(field => {
+                    try { delete ctx.data_response.data[field]; } catch (err) { }
+                });
+            }
             return ctx.data_response;
         }).bind(this, actionBuilder));
         return actionBuilder;
@@ -105,6 +120,20 @@ class DataRouterBuilder {
                     var r = step(ctx);
                     if (r instanceof Promise) r = await r.catch(console.error);
                 }
+                var withoutFields = (actionBuilder.withoutFields || []);
+                if (Array.isArray(ctx.data_response)) {
+                    ctx.data_response = ctx.data_response.map(item => {
+                        withoutFields.forEach(field => {
+                            try { delete item[field]; } catch (err) { }
+                        });
+                        return itme;
+                    });
+                }
+                else {
+                    withoutFields.forEach(field => {
+                        try { delete ctx.data_response[field]; } catch (err) { }
+                    });
+                }
                 return ctx.data_response;
             }).bind(this, actionBuilder));
             return actionBuilder;
@@ -126,18 +155,56 @@ class DataActionBuilder {
         this.steps = [];
         this.fields = [];
         this.whereBuilder = null;
+        this.withoutFields = [];
     }
+    /** @param {function(FastApiContext){}} action */
     custom(action) {
         this.steps.push(action);
         return this;
     }
+    without(...fields) {
+        this.withoutFields = fields;
+        return this;
+    }
+    /**
+    * @param {{path: string}} options
+     */
+    upload(options) {
+        this.steps.push(async (ctx) => {
+            var files = ctx.request.files;
 
+            for (var file of files) {
+                var filePath = path.join(options.path, file.id + path.extname(file.name));
+                var fileStream = fs.createWriteStream(filePath);
+                fileStream.write(file.base64Data);
+                fileStream.end();
+            }
+
+            ctx.data_response = {
+                file: file.name,
+                path: filePath
+            };
+        });
+        return this;
+    }
     asFilter(...filters) {
         this.custom(async (ctx) => {
             var body = ctx.body;
             if (!body.filter) body.filter = {};
             for (var filter of filters) {
-                body.filter[filter] = body[filter];
+                if (typeof filter === 'string') {
+                    body.filter[filter] = body[filter];
+                }
+                else {
+                    for (var k in filter) {
+                        var v = filter[k];
+                        if (typeof v === 'function') {
+                            v = v(body, k, body[k]);
+                            if (v instanceof Promise) v = await v.catch(console.error);
+                        }
+                        body.filter[k] = v;
+                    }
+                }
             }
         });
         return this;
@@ -233,9 +300,12 @@ class DataActionBuilder {
                     selectFields.push({ [field.name]: field.queryFunc(db) });
                 }
                 if (this.whereBuilder) {
-                    query = this.whereBuilder(query);
+                    query = this.whereBuilder(query, ctx);
                 }
-                response = await query.where(whereCondition).select(...selectFields).catch(console.error);
+                if (whereCondition !== null) {
+                    query = query.where(whereCondition);
+                }
+                response = await query.select(...selectFields).catch(console.error);
             }
             ctx.data_response = {
                 success: response !== null && response !== undefined,
@@ -275,23 +345,77 @@ class DataActionBuilder {
                 if (filter) {
                     for (var kv in filter) {
                         var v = filter[kv];
+                        const field = dbSchema.fields.filter(f => f.name === kv)[0];
                         if (Array.isArray(v) && v.length > 0) {
-                            query = query.whereIn(kv, v);
+                            if (field && field.type === "guid") {
+                                query = query.whereIn(db.raw(`convert(nvarchar(MAX), ${kv})`), v);
+                            }
+                            else {
+                                query = query.whereIn(kv, db.raw(v));
+                            }
                         }
                         else {
-                            if (typeof v == "string" && v.trim().length > 0) {
-                                query = query.where(kv, v);
+                            if (field && field.type === "guid") {
+                                query = query.where(db.raw(`convert(nvarchar(MAX), ${kv})`), v);
                             }
                             else {
                                 query = query.where(kv, v);
                             }
+
                         }
                     }
                 }
-                if (searchText) {
-                    for (var f of dbSchema.fields.filter(p => p.type === 'string')) {
-                        var fieldName = f.name;
-                        query = query.where(fieldName, 'like', `%${searchText}%`);
+                if (this.whereBuilder) {
+                    query = this.whereBuilder(query, ctx);
+                }
+
+                if (searchText !== undefined && searchText !== null && searchText.trim().length > 0) {
+                    if (dbSchema) {
+                        searchText = searchText.replace(/[\%]/g, "");
+                        query = db().select().from({ t1: query.clone() });
+
+                        var searchableFields = dbSchema.fields.filter(p => p.flags.indexOf("search") >= 0).map(p => p.name);
+                        var unsearchableFields = dbSchema.fields.filter(p => p.flags.indexOf("unsearch") >= 0).map(p => p.name);
+                        var searchFields = dbSchema.fields.filter(p => p.type === 'string').map(p => p.name);
+
+                        searchFields = [...searchFields, ...searchableFields];
+                        for (var f of searchFields) {
+                            var fieldName = f;
+                            if (unsearchableFields.indexOf(fieldName) > -1) {
+                                continue;
+                            }
+                            query = query.orWhere(fieldName, 'like', `%${searchText}%`);
+                        }
+                    }
+                }
+
+                if (pagination) {
+                    var countQuery = query.clone();
+                    countQuery._statements = countQuery._statements.filter(p => p.grouping != "order");
+                    pagination.count = await db.queryBuilder().from(countQuery.as('t1')).count('* as count').select().then(p => Number((p[0] || {}).count)).catch(console.error);
+
+                    const pk = dbSchema.fields.filter(p => p.primary)[0];
+                    if (pk) {
+                        query = query.orderBy(pk.name, 'asc');
+                    }
+
+                    for (var field of dbSchema.fields.filter(p => p.flags.indexOf('ascending') > -1 || p.flags.indexOf('descending') > -1)) {
+                        query = field.flags.indexOf('ascending') > -1 ? query = query.orderBy(field.name, 'asc') : query = query.orderBy(field.name, 'desc');
+                    }
+
+                    query = query.offset(pagination.page * pagination.itemCount).limit(pagination.itemCount);
+                    pagination.pageCount = Math.ceil(pagination.count / (pagination.itemCount * 1.0));
+                }
+                else {
+                    if (dbSchema) {
+                        const pk = dbSchema.fields.filter(p => p.primary)[0];
+                        if (pk) {
+                            query = query.orderBy(pk.name, 'asc');
+                        }
+
+                        for (var field of dbSchema.fields.filter(p => p.flags.indexOf('ascending') > -1 || p.flags.indexOf('descending') > -1)) {
+                            query = field.flags.indexOf('ascending') > -1 ? query = query.orderBy(field.name, 'asc') : query = query.orderBy(field.name, 'desc');
+                        }
                     }
                 }
 
@@ -299,18 +423,11 @@ class DataActionBuilder {
                     query = query.orderBy(sort.column, sort.state ? 'desc' : 'asc');
                 }
 
-                if (pagination) {
-                    pagination.count = await db.queryBuilder().from(query.clone().as('t1')).count('* as count').select().then(p => new Number((p[0] || {}).count)).catch(console.error);
-                    query = query.offset(pagination.page * pagination.itemCount).limit(pagination.itemCount);
-                    pagination.pageCount = Math.ceil(pagination.count / (pagination.itemCount * 1.0));
-                }
+
 
                 var selectFields = ["*"];
                 for (var field of this.fields) {
                     selectFields.push({ [field.name]: field.queryFunc(db) });
-                }
-                if (this.whereBuilder) {
-                    query = this.whereBuilder(query);
                 }
                 response = await query.select(...selectFields).catch(console.error);
             }
@@ -488,6 +605,106 @@ class DataActionBuilder {
                                 message: `${pk.name} is required`,
                                 code: 'FIELD_REQUIRED'
                             });
+                        }
+                    }
+                }
+
+            }
+
+
+            ctx.data_response = {
+                success: (response !== null && response !== undefined) && errors.length === 0,
+                errors: errors,
+                data: response
+            };
+        });
+        return this;
+    }
+    /**
+   * @param {String|Function} action
+   */
+    upsert(action) {
+        this.custom(async (ctx) => {
+            var tableName = this.router.name;
+            var response = null;
+            var errors = [];
+
+            if (action !== null && action !== undefined) {
+                tableName = action;
+            }
+            /** @type {knex} */
+            const db = await ctx.db(ctx);
+            const schemaDBConnection = getSchemaDBConnection(db);
+
+
+            if (typeof action === 'function') {
+                var result = action({ ctx, db, tableName });
+                if (result instanceof Promise) result = await result.catch(console.error);
+                response = result;
+            }
+            else {
+                var dbSchema = this.router.builder.migration.getSchema(tableName);
+
+                var recordId = null;
+                var record = { ...ctx.body };
+                if (dbSchema) {
+                    recordId = null;
+
+                    var pk = dbSchema.fields.filter(p => p.primary)[0];
+                    var whereCondition = null;
+
+                    if ((record[pk.name] || "").trim().length > 0) {
+                        recordId = record[pk.name];
+                        delete record[pk.name];
+                        whereCondition = { [pk.name]: recordId };
+                    }
+
+                    var assignFields = dbSchema.fields.filter(p => p.assigns.length > 0 && p.assigns.filter(a => a.action === 'update').length > 0);
+                    for (var field of assignFields) {
+                        var assign = field.assigns.filter(p => p.action === "update")[0];
+                        if (assign) {
+                            try {
+                                var fieldValue = assign.execute(schemaDBConnection);
+                                if (fieldValue instanceof Promise) fieldValue = await fieldValue.catch(err => {
+                                    errors.push({
+                                        field: field.name,
+                                        message: err.toString(),
+                                        code: 'ASSIGN_ERROR'
+                                    });
+                                    console.error(err);
+                                });
+                                record[field.name] = fieldValue;
+                            } catch (err) {
+                                console.error(err);
+                            }
+                        }
+                    }
+
+                    if (errors.length === 0 && whereCondition !== null) {
+                        await db(tableName).where(whereCondition).update(record).then(p => {
+                            response = recordId || true;
+                        }).catch(err => {
+                            errors.push({
+                                field: '',
+                                message: err.toString(),
+                                code: 'DB_ERROR'
+                            });
+                            console.error(err);
+                        });
+                    } else {
+                        if (whereCondition === null) {
+                            if (errors.length === 0) {
+                                await db(tableName).insert(record).then(p => {
+                                    response = recordId || true;
+                                }).catch(err => {
+                                    errors.push({
+                                        field: '',
+                                        message: err.toString(),
+                                        code: 'DB_ERROR'
+                                    });
+                                    console.error(err);
+                                });
+                            }
                         }
                     }
                 }

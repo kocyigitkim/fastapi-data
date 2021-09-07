@@ -1,6 +1,6 @@
 {
   "name": "fastapi-data",
-  "version": "1.0.3",
+  "version": "1.0.7",
   "description": "Data Layer For Fast Api Express",
   "main": "index.js",
   "scripts": {
@@ -17,7 +17,7 @@
   },
   "homepage": "https://github.com/kocyigitkim/fastapi-data#readme",
   "dependencies": {
-    "fastapi-express": "file:C:\\PrivateProjects\\fastapi-express",
+    "fastapi-express": "^1.2.4",
     "knex": "^0.95.8",
     "knex-schema-loader": "^1.0.6",
     "moment": "^2.29.1",

@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const parser = require('simple-text-parser').default;
-const flagDefinitions = ["anonymize", "autonumber"];
+const flagDefinitions = ["anonymize", "autonumber", "ascending", "descending", "search", "unsearch"];
 let AsyncFunction = Object.getPrototypeOf(async function () { }).constructor
 
 class TableAssign {
@@ -86,7 +86,7 @@ class SchemaParser {
                 this.name = line[1];
             }
             else {
-                if (this.type === 'table') {
+                if (this.type === 'table' || this.type === 'view') {
                     if (!this.fields) {
                         this.fields = [];
                     }
