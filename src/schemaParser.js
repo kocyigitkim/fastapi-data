@@ -1,12 +1,45 @@
 const fs = require('fs');
 const path = require('path');
 const parser = require('simple-text-parser').default;
-const flagDefinitions = ["anonymize", "autonumber"];
+const flagDefinitions = ["anonymize", "autonumber", "ascending", "descending", "search", "unsearch"];
 let AsyncFunction = Object.getPrototypeOf(async function () { }).constructor
+
+class TableAssign {
+    constructor(initial) {
+        /** @type {String} */
+        this.action = initial.action;
+        /** @type {Function} */
+        this.execute = initial.execute;
+    }
+}
+class TableField {
+    constructor(initial) {
+        /** @type {'string'|'guid'|'boolean'|'int'|'long'|'decimal'|'binary'|'money'|'file'|'image'|'json'|'xml'} */
+        this.type = initial.type;
+        /** @type {String} */
+        this.name = initial.name;
+        /** @type {Function} */
+        this.defaultValue = initial.defaultValue;
+        /** @type {Boolean} */
+        this.primary = initial.primary;
+        /** @type {Boolean} */
+        this.foreign = initial.foreign;
+        /** @type {String} */
+        this.reference = initial.reference;
+        /** @type {Boolean} */
+        this.nullable = initial.nullable;
+        /** @type {TableAssign[]} */
+        this.assigns = initial.assigns;
+        /** @type {String[]} */
+        this.flags = initial.flags;
+    }
+}
 
 class SchemaParser {
     constructor(filePath) {
         this.filePath = filePath;
+        /** @type {TableField[]} */
+        this.fields = [];
     }
     parse() {
         var fileContent = fs.readFileSync(this.filePath, { encoding: 'utf-8' });
@@ -47,18 +80,18 @@ class SchemaParser {
                 foreign = line[0];
                 line.splice(0, 1);
             }
-            
+
 
             if (type === 'def') {
                 this.name = line[1];
             }
             else {
-                if (this.type === 'table') {
+                if (this.type === 'table' || this.type === 'view') {
                     if (!this.fields) {
                         this.fields = [];
                     }
                     var isNullable = line[1].endsWith("?");
-                    this.fields.push({
+                    this.fields.push(new TableField({
                         type: line[0],
                         name: isNullable ? line[1].substr(0, line[1].length - 1) : line[1],
                         defaultValue: line[3],
@@ -68,7 +101,7 @@ class SchemaParser {
                         nullable: isNullable,
                         assigns: assigns,
                         flags: flags
-                    });
+                    }));
                 }
             }
         }
@@ -80,3 +113,5 @@ function buildAsyncFunction(body) {
 }
 
 module.exports = SchemaParser;
+module.exports.TableAssign = TableAssign;
+module.exports.TableField = TableField;

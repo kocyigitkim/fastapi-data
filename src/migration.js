@@ -24,8 +24,8 @@ class Migration {
             }
         });
     }
-    getSchema(name, type = 'table') {
-        return this.schemas.filter(p => p.name === name && p.type === type)[0];
+    getSchema(name) {
+        return this.schemas.filter(p => p.name === name)[0];
     }
     async exportSchemas(dir) {
         if (!this.db.isKnex) return;
