@@ -381,7 +381,7 @@ class DataActionBuilder {
 
                     if (errors.length === 0) {
                         await db(tableName).insert(record).then(p => {
-                            response = recordId || true;
+                            response = recordId;
                         }).catch(err => {
                             errors.push({
                                 field: '',
