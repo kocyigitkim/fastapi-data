@@ -1,6 +1,5 @@
 const FastApiRouter = require('fastapi-express').FastApiRouter;
 
-const FastApiContext = require('fastapi-express').JSDOC.FastApiContext;
 const migration = require('./migration');
 const dbConnection = require('./databaseConnection');
 const getSchemaDBConnection = require('./SchemaDBConnector').getDBConnector;
@@ -9,6 +8,8 @@ const path = require('path');
 const knex = require('knex').knex;
 const EntityManager = require('fastapi-express').KnexEntityPlugin.EntityManager;
 const uuid = require('uuid').v4;
+
+const OrderByFields = ['CreateDate', 'createDate', 'createdate', 'CreatedOn', 'created_at', 'inserted_at'];
 
 class DataRestBuilder {
     constructor() {
@@ -157,7 +158,7 @@ class DataActionBuilder {
         this.whereBuilder = null;
         this.withoutFields = [];
     }
-    /** @param {function(FastApiContext){}} action */
+    /** @param {function(ctx){}} action */
     custom(action) {
         this.steps.push(action);
         return this;
@@ -419,11 +420,24 @@ class DataActionBuilder {
                     }
                 }
 
+                if (dbSchema) {
+                    var orderByFields = dbSchema.fields.filter(p => {
+                        if (sort && sort.column) {
+                            if (sort.column === p.name) {
+                                return false;
+                            }
+                        }
+                        return OrderByFields.indexOf(p.name) > -1;
+                    });
+                    if (orderByFields && orderByFields.length > 0) {
+                        var orderField = orderByFields[0];
+                        query = query.orderBy(orderField.name, 'desc');
+                    }
+                }
+
                 if (sort && sort.column) {
                     query = query.orderBy(sort.column, sort.state ? 'desc' : 'asc');
                 }
-
-
 
                 var selectFields = ["*"];
                 for (var field of this.fields) {
