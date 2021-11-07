@@ -81,7 +81,6 @@ class SchemaParser {
                 line.splice(0, 1);
             }
 
-
             if (type === 'def') {
                 this.name = line[1];
             }

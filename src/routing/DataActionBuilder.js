@@ -1,147 +1,10 @@
-const FastApiRouter = require('fastapi-express').FastApiRouter;
-
-const migration = require('./migration');
-const dbConnection = require('./databaseConnection');
-const getSchemaDBConnection = require('./SchemaDBConnector').getDBConnector;
+const { DataRouterBuilder } = require('./DataRouterBuilder');
+const FastApiContext = require('fastapi-express').JSDOC.FastApiContext;
+const getSchemaDBConnection = require('../db/SchemaDBConnector').getDBConnector;
 const fs = require('fs');
 const path = require('path');
 const knex = require('knex').knex;
-const EntityManager = require('fastapi-express').KnexEntityPlugin.EntityManager;
 const uuid = require('uuid').v4;
-
-const OrderByFields = ['CreateDate', 'createDate', 'createdate', 'CreatedOn', 'created_at', 'inserted_at'];
-
-class DataRestBuilder {
-    constructor() {
-        /** @type {DataRouterBuilder[]} */
-        this.routers = [];
-    }
-    /**
-     * @param {knex} db
-     * @param {string} schemaPath
-     */
-    init(db, schemaPath) {
-        this.schemaPath = schemaPath;
-        this.db = db;
-        if (db) {
-            this.migration = new migration(new dbConnection(db));
-            if (schemaPath && fs.existsSync(schemaPath)) this.migration.registerSchemas(schemaPath);
-        }
-    }
-    async exportSchemas() {
-        if (this.migration) {
-            await this.migration.exportSchemas(this.schemaPath);
-        }
-    }
-    /**
-     * @param {String} name
-     * @returns {DataRouterBuilder}
-     */
-    router(name) {
-        var routerBuilder = new DataRouterBuilder(this, name);
-        this.routers.push(routerBuilder);
-        return routerBuilder;
-    }
-    build(app, routerPath) {
-        this.app = app;
-        for (var file of fs.readdirSync(routerPath, { withFileTypes: true })) {
-            var f = path.join(routerPath, file.name);
-            if (file.name.endsWith(".datarouter.js")) {
-                require(f).init(this);
-            }
-        }
-
-        for (var router of this.routers) {
-            router.router.init(app);
-            app.app.use("/api/" + router.name, router.router.router);
-        }
-    }
-}
-
-class DataRouterBuilder {
-    /**
-     * @param {DataRestBuilder} builder
-     * @param {String} name
-     */
-    constructor(builder, name) {
-        this.builder = builder;
-        this.name = name;
-        this.actions = [];
-        this.router = new FastApiRouter.FastApiRouter(this.name, false);
-    }
-    /** 
-     * @param {String} name
-     * @param {String} description
-     * @return {DataActionBuilder}
-    */
-    action(name, description) {
-        var actionBuilder = new DataActionBuilder(this, name, description);
-        this.actions.push(actionBuilder);
-        this.router.post(name, (async (actionBuilder, ctx) => {
-            const steps = actionBuilder.steps;
-            for (var step of steps) {
-                var r = step(ctx);
-                if (r instanceof Promise) r = await r.catch(console.error);
-            }
-            var withoutFields = (actionBuilder.withoutFields || []);
-            if (ctx.data_response && Array.isArray(ctx.data_response.data)) {
-                ctx.data_response.data = ctx.data_response.data.map(item => {
-                    withoutFields.forEach(field => {
-                        try { delete item[field]; } catch (err) { }
-                    });
-                    return item;
-                });
-            }
-            else if (ctx.data_response) {
-                withoutFields.forEach(field => {
-                    try { delete ctx.data_response.data[field]; } catch (err) { }
-                });
-            }
-            return ctx.data_response;
-        }).bind(this, actionBuilder));
-        return actionBuilder;
-    }
-    /**
-     * @param {String} sourceName
-     * @param {String} name
-     * @param {String} description
-     * @return {DataActionBuilder}
-     */
-    cloneAction(sourceName, name, description) {
-        var sourceAction = this.actions.find(a => a.name == sourceName);
-        if (sourceAction) {
-            var actionBuilder = new DataActionBuilder(this, name, description);
-            actionBuilder.steps = sourceAction.steps;
-            actionBuilder.fields = sourceAction.fields;
-            this.actions.push(actionBuilder);
-            this.router.post(name, (async (actionBuilder, ctx) => {
-                console.log(Object.keys(ctx));
-                const steps = actionBuilder.steps;
-                for (var step of steps) {
-                    var r = step(ctx);
-                    if (r instanceof Promise) r = await r.catch(console.error);
-                }
-                var withoutFields = (actionBuilder.withoutFields || []);
-                if (Array.isArray(ctx.data_response)) {
-                    ctx.data_response = ctx.data_response.map(item => {
-                        withoutFields.forEach(field => {
-                            try { delete item[field]; } catch (err) { }
-                        });
-                        return itme;
-                    });
-                }
-                else {
-                    withoutFields.forEach(field => {
-                        try { delete ctx.data_response[field]; } catch (err) { }
-                    });
-                }
-                return ctx.data_response;
-            }).bind(this, actionBuilder));
-            return actionBuilder;
-        }
-        return null;
-    }
-}
 
 class DataActionBuilder {
     /**
@@ -157,14 +20,22 @@ class DataActionBuilder {
         this.fields = [];
         this.whereBuilder = null;
         this.withoutFields = [];
+        this.cachePlan = null;
+        this.cacheEnabled = false;
     }
-    /** @param {function(ctx){}} action */
+    /** @param {function(FastApiContext){}} action */
     custom(action) {
         this.steps.push(action);
         return this;
     }
     without(...fields) {
         this.withoutFields = fields;
+        return this;
+    }
+    cache(cachePlan) {
+        if (!cachePlan) cachePlan = { ttl: 1800 };
+        this.cachePlan = cachePlan;
+        this.cacheEnabled = true;
         return this;
     }
     /**
@@ -214,15 +85,21 @@ class DataActionBuilder {
         this.custom(async (ctx) => {
             var oldBody = ctx.body;
             var newBody = {};
-            for (var k in schema) {
-                var v = schema[k];
-                if (typeof v === "function") {
-                    var result = v(oldBody, k);
-                    if (result instanceof Promise) result = await result.catch(console.error);
-                    newBody[k] = result;
-                }
-                else {
-                    newBody[k] = oldBody[v];
+            if (typeof schema === 'function') {
+                newBody = schema(oldBody);
+                if (newBody instanceof Promise) newBody = await newBody.catch(console.error);
+            }
+            else {
+                for (var k in schema) {
+                    var v = schema[k];
+                    if (typeof v === "function") {
+                        var result = v(oldBody, k);
+                        if (result instanceof Promise) result = await result.catch(console.error);
+                        newBody[k] = result;
+                    }
+                    else {
+                        newBody[k] = oldBody[v];
+                    }
                 }
             }
             ctx.body = newBody;
@@ -360,7 +237,7 @@ class DataActionBuilder {
                                 query = query.where(db.raw(`convert(nvarchar(MAX), ${kv})`), v);
                             }
                             else {
-                                query = query.where(kv, v);
+                                query = BuildAdvancedFilter(query, kv, v);
                             }
 
                         }
@@ -420,24 +297,11 @@ class DataActionBuilder {
                     }
                 }
 
-                if (dbSchema) {
-                    var orderByFields = dbSchema.fields.filter(p => {
-                        if (sort && sort.column) {
-                            if (sort.column === p.name) {
-                                return false;
-                            }
-                        }
-                        return OrderByFields.indexOf(p.name) > -1;
-                    });
-                    if (orderByFields && orderByFields.length > 0) {
-                        var orderField = orderByFields[0];
-                        query = query.orderBy(orderField.name, 'desc');
-                    }
-                }
-
                 if (sort && sort.column) {
                     query = query.orderBy(sort.column, sort.state ? 'desc' : 'asc');
                 }
+
+
 
                 var selectFields = ["*"];
                 for (var field of this.fields) {
@@ -518,7 +382,7 @@ class DataActionBuilder {
 
                     if (errors.length === 0) {
                         await db(tableName).insert(record).then(p => {
-                            response = recordId;
+                            response = recordId || true;
                         }).catch(err => {
                             errors.push({
                                 field: '',
@@ -649,7 +513,6 @@ class DataActionBuilder {
             /** @type {knex} */
             const db = await ctx.db(ctx);
             const schemaDBConnection = getSchemaDBConnection(db);
-
 
             if (typeof action === 'function') {
                 var result = action({ ctx, db, tableName });
@@ -1050,6 +913,42 @@ async function MapObjectDynamic(oldbody, schema, ctx) {
     return newBody;
 }
 
-module.exports = {
-    DataRestBuilder
-};
+function BuildAdvancedFilter(query, key, value) {
+    if (typeof value == 'object') {
+        var exit = false;
+        if (value.hasOwnProperty('gt')) {
+            query = query.where(key, '>', value.gt);
+        }
+        if (value.hasOwnProperty('lt')) {
+            query = query.where(key, '<', value.lt);
+        }
+        if (value.hasOwnProperty('gte')) {
+            query = query.where(key, '>=', value.gte);
+        }
+        if (value.hasOwnProperty('lte')) {
+            query = query.where(key, '<=', value.lte);
+        }
+        if (value.hasOwnProperty('eq')) {
+            query = query.where(key, value.eq);
+        }
+        if (value.hasOwnProperty('neq')) {
+            query = query.whereNot(key, value.neq);
+        }
+        if (value.hasOwnProperty('from')) {
+            query = query.where(key, '>=', value.from);
+            exit = true;
+        }
+        if (value.hasOwnProperty('to')) {
+            query = query.where(key, '<', value.to);
+            exit = true;
+        }
+    }
+    if (!exit) {
+        return query.where(key, value);
+    }
+    else {
+        return query;
+    }
+}
+
+module.exports = { DataActionBuilder };

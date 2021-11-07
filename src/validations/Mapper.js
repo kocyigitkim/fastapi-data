@@ -6,7 +6,7 @@ const Mappers = {
     Boolean: (v) => (v !== null && v !== undefined ? (v.toString().toLowerCase() == "true" || v == "1" || v == "on") : false),
     DateTime: (v) => moment(v).toDate(),
     Guid: (v) => v,
-    JsonObject: (v) => v !== null && v !== undefined ? JSON.parse(v) : null,
+    JsonObject: (v) => v !== null && v !== undefined ? ((typeof v === "string") ? JSON.parse(v) : v) : null,
     Array: (v) => v !== undefined && v !== null ? (Array.isArray(v) ? v : [v]) : null,
 };
 

@@ -1,27 +1,27 @@
 {
-  "name": "fastapi-data",
-  "version": "1.0.7",
-  "description": "Data Layer For Fast Api Express",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "author": "@kocyigitkim",
+  "bugs": {
+    "url": "https://github.com/kocyigitkim/fastapi-data/issues"
   },
+  "bundleDependencies": false,
+  "dependencies": {
+    "fastapi-express": "^1.2.4",
+    "knex": "^0.95.8",
+    "knex-schema-loader": "^1.0.6",
+    "moment": "^2.29.1",
+    "node-cache": "^5.1.2",
+    "simple-text-parser": "^2.1.1",
+    "uuid": "^3.4.0"
+  },
+  "deprecated": false,
+  "description": "Data Layer For Fast Api Express",
+  "homepage": "https://github.com/kocyigitkim/fastapi-data#readme",
+  "license": "MIT",
+  "main": "index.js",
+  "name": "fastapi-data",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/kocyigitkim/fastapi-data.git"
   },
-  "author": "",
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/kocyigitkim/fastapi-data/issues"
-  },
-  "homepage": "https://github.com/kocyigitkim/fastapi-data#readme",
-  "dependencies": {
-    "fastapi-express": "^1.3.2",
-    "knex": "^0.95.8",
-    "knex-schema-loader": "^1.0.6",
-    "moment": "^2.29.1",
-    "simple-text-parser": "^2.1.1",
-    "uuid": "^3.4.0"
-  }
+  "version": "1.0.10"
 }

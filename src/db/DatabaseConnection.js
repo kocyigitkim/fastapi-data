@@ -1,7 +1,7 @@
 const knex = require('knex');
 class DatabaseConnection {
     constructor(db) {
-        if(db.name === "knex"){
+        if (db.name === "knex") {
             this.db = db;
             this.isKnex = true;
             registerKnex(this.db);
@@ -44,6 +44,9 @@ function registerKnex(knex) {
     knex.existsTable = async (tableName) => {
         var results = await knex("INFORMATION_SCHEMA.TABLES").where("TABLE_CATALOG", dbName).where("TABLE_NAME", tableName).catch(console.error);
         return results && results.length > 0;
+    };
+    knex.storedProcedure = async (name, args) => {
+        return await knex.raw(`exec ${name} ${args.map(item => "?").join(",")}`, args).catch(console.error);
     };
 }
 

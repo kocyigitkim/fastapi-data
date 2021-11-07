@@ -1,6 +1,6 @@
 const path = require('path');
 const fs = require('fs');
-const schemaParser = require('./schemaParser');
+const schemaParser = require('./SchemaParser');
 const schemaLoader = require('knex-schema-loader');
 const { default: knex } = require('knex');
 class Migration {
