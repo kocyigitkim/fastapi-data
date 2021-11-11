@@ -41,10 +41,13 @@ async function RouterActionTemplate(actionBuilder, ctx) {
         return dataCache.get(actionBuilder.id);
     }
     const steps = actionBuilder.steps;
+    ctx.exit = null;
     for (var step of steps) {
         var r = step(ctx);
         if (r instanceof Promise)
             r = await r.catch(console.error);
+        if (ctx.exit)
+            break;
     }
     var withoutFields = (actionBuilder.withoutFields || []);
     if (ctx.data_response && Array.isArray(ctx.data_response.data)) {
