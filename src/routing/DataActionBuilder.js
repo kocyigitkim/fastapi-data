@@ -942,6 +942,10 @@ function BuildAdvancedFilter(query, key, value) {
             query = query.where(key, '<', value.to);
             exit = true;
         }
+        if (value.hasOwnProperty('in')) {
+            query = query.whereIn(key, value.in);
+            exit = true;
+        }
     }
     if (!exit) {
         return query.where(key, value);
