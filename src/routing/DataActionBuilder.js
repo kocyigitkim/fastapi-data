@@ -837,7 +837,7 @@ class DataActionBuilder {
     /**
      * @param {String|Function} action
      */
-    storedProcedureJSON(action) {
+    storedProcedureJSON(action, disableParseResults = false) {
         this.custom(async (ctx) => {
             var tableName = this.router.name;
             var response = null;
@@ -864,9 +864,21 @@ class DataActionBuilder {
                     await db.raw(`exec ${tableName} ?`, [
                         JSON.stringify(record)
                     ]).then(records => {
-                        response = JSON.parse(records.map(r => {
-                            return Object.values(r)[0];
-                        }).join(""));
+                        if (disableParseResults) return records;
+                        try {
+                            if (records) {
+                                response = JSON.parse(
+                                    records
+                                        .map((r) => {
+                                            return Object.values(r)[0];
+                                        })
+                                        .join("")
+                                );
+                            }
+                        } catch (err) {
+                            console.error(err);
+                            return null;
+                        }
                     }).catch((err) => {
                         errors.push({
                             field: '',
@@ -877,9 +889,6 @@ class DataActionBuilder {
                     });
                 }
             }
-
-
-
 
             ctx.data_response = {
                 success: (response !== null && response !== undefined) && errors.length === 0,
