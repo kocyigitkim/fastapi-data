@@ -856,7 +856,6 @@ class DataActionBuilder {
             }
             else {
 
-                var recordId = null;
                 var record = { ...ctx.body };
 
                 if (errors.length === 0) {
@@ -864,7 +863,7 @@ class DataActionBuilder {
                     await db.raw(`exec ${tableName} ?`, [
                         JSON.stringify(record)
                     ]).then(records => {
-                        if (disableParseResults) return records;
+                        if (disableParseResults) return response = records;
                         try {
                             if (records) {
                                 response = JSON.parse(
