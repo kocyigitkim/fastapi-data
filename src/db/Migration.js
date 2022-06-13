@@ -25,7 +25,7 @@ class Migration {
         });
     }
     getSchema(name) {
-        return this.schemas.filter(p => p.name === name)[0];
+        return this.schemas.filter(p => p.name.toLowerCase() === name.toLowerCase())[0];
     }
     async exportSchemas(dir) {
         if (!this.db.isKnex) return;

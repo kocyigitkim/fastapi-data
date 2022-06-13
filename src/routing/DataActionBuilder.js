@@ -161,7 +161,6 @@ class DataActionBuilder {
                 /** @type {knex} */
                 const db = await ctx.db(ctx);
                 var dbSchema = this.router.builder.migration.getSchema(tableName);
-                dbSchema.fields.filter(p => p.primary)[0]
 
                 var query = db(tableName);
                 query = query.limit(1);
